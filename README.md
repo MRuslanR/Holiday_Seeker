@@ -40,16 +40,16 @@ The project root must contain an Excel file named `config.xlsx` with two sheets:
 ### 3. Docker Deployment
 
 Build the image:
-docker build -t holidays-bot .
+```docker build -t holidays-bot .```
 
 Run the container (mounting a volume for database persistence):
-docker run -d --name holidays-bot 
+```docker run -d --name holidays-bot```
 
 ### 4. Manual Execution
 Install dependencies:
-pip install -r requirements.txt
+```pip install -r requirements.txt```
 
 Run the bot:
-python bot.py
+```python bot.py```
 
 
