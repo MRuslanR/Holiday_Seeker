@@ -43,7 +43,7 @@ Build the image:
 ```docker build -t holidays-bot .```
 
 Run the container (mounting a volume for database persistence):
-```docker run -d --name holidays-bot```
+```docker run -d --name holidays-bot holidays-bot```
 
 ### 4. Manual Execution
 Install dependencies:
