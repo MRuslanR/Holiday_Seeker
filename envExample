@@ -1,0 +1,10 @@
+API_KEY_NINJAS=your_api_ninjas_key
+OPENROUTER_API_KEY=your_openrouter_key
+
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+TELEGRAM_CHANNEL_ID=your_channel_id_or_username
+
+SMTP_SERVER=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your_email@gmail.com
+SMTP_PASSWORD=your_app_specific_password
