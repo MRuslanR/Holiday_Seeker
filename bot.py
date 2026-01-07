@@ -390,6 +390,162 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("Операция отменена. Чем еще могу помочь?")
     return ConversationHandler.END
 
+async def force_run_monthly_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Полная копия run_monthly_data_collection, но с ручным выбором даты.
+    Запуск: /run_month 2024-06
+    """
+    log_ctx = {'source': 'manual_command'}
+    chat_id = update.effective_chat.id  # Отвечаем туда, где написали команду
+
+    # --- 1. Парсинг даты (единственное отличие от оригинала) ---
+    try:
+        if not context.args or len(context.args) != 1:
+            await update.message.reply_text("⚠️ Введите дату. Пример: `/run_month 2024-06`", parse_mode='Markdown')
+            return
+
+        target_arg = context.args[0]  # "2024-06"
+        year, month = target_arg.split('-')
+        
+        # Получаем первый и последний день
+        last_day_num = calendar.monthrange(int(year), int(month))[1]
+        first_day = f"{year}-{month}-01"
+        last_day = f"{year}-{month}-{last_day_num}"
+        
+        # Формируем строки для сообщений
+        next_month_str = str(month).zfill(2)
+        period_str = f"{next_month_str}/{year}"
+        
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат даты. Используйте ГГГГ-ММ")
+        return
+
+    # --- 2. Старт (как в оригинале) ---
+    logger.info(f"Ручной запуск сбора данных за {period_str}...", extra={'context': log_ctx})
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"🚀 Начинаю сбор данных о праздниках на период {period_str}..."
+    )
+
+    try:
+        countries_for_holidays = config.COUNTRIES
+        if not countries_for_holidays:
+            await context.bot.send_message(chat_id=chat_id, text="⚠️ Список стран пуст.")
+            return
+
+        # --- 3. Сбор данных (Logic copy) ---
+        # Чтобы бот не завис при долгом сборе, можно обернуть это в to_thread, 
+        # но чтобы сохранить логику 1-в-1, вызываем сервис так же.
+        # Для надежности в ручном режиме лучше использовать thread для API запросов:
+        
+        holiday_service = HolidayService()
+
+        # Функция для запуска в потоке, чтобы не блочить бота
+        def process_all_countries():
+            for country_code in countries_for_holidays:
+                try:
+                    holiday_service.process_holidays_for_period(
+                        country_code=country_code,
+                        year=year,
+                        month=next_month_str,
+                        first_day=first_day,
+                        last_day=last_day
+                    )
+                except Exception as e:
+                    logger.critical(f"Ошибка страны {country_code}: {e}")
+            return holiday_service
+
+        # Запускаем сбор
+        await asyncio.to_thread(process_all_countries)
+
+        # --- 4. Итоговое сообщение (Logic copy) ---
+        escaped_period = escape_markdown(period_str, version=2)
+        escaped_countries = escape_markdown(', '.join(countries_for_holidays), version=2)
+        escaped_tokens = escape_markdown(str(holiday_service.grand_total_tokens), version=2)
+        price_str = f"{holiday_service.grand_total_price:.4f}"
+        escaped_price = escape_markdown(price_str, version=2)
+
+        summary_message = (
+            f"✅ *Сбор данных успешно завершен* ✨\n\n"
+            f"*Обработанный период:* `{escaped_period}`\n"
+            f"*Страны:* `{escaped_countries}`\n\n"
+            f"📊 *Итоги по экономике:*\n"
+            f"  • Всего потрачено токенов: `{escaped_tokens}`\n"
+            f"  • Итоговая стоимость: `{escaped_price}$`\n\n"
+            f"⏳ Начинаю генерацию Excel отчета\\.\\.\\."
+        )
+        
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=summary_message,
+            parse_mode='MarkdownV2'
+        )
+
+        # --- 5. Excel (Logic copy) ---
+        report_path = await asyncio.to_thread(
+            excel_reporter.generate_holidays_report, start_date=first_day, end_date=last_day
+        )
+        
+        with open(report_path, 'rb') as report_file:
+            await context.bot.send_document(
+                chat_id=chat_id,
+                document=report_file,
+                filename=os.path.basename(report_path),
+                caption=f"📊 Excel-отчет по праздникам на {period_str} готов!"
+            )
+        
+        if report_path and os.path.exists(report_path):
+            os.remove(report_path)
+
+        # --- 6. Email (Logic copy) ---
+        if config.EMAIL_NOTIFICATIONS_ENABLED:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="📧 Рассылаю email-уведомления подписчикам..."
+            )
+            
+            month_names = ["", "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+                           "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
+            month_name = month_names[int(month)]
+
+            email_result = await asyncio.to_thread(
+                email_sender.send_holiday_email_to_all,
+                year=int(year),
+                month_name=month_name,
+                start_date=first_day,
+                end_date=last_day
+            )
+
+            if email_result.get('success'):
+                success_msg = (
+                    f"✅ Email\\-рассылка успешно завершена\\.\n"
+                    f"Отправлено писем: `{email_result.get('sent_count', 'N/A')}` "
+                    f"из `{email_result.get('total_recipients', 'N/A')}`\\."
+                )
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=success_msg,
+                    parse_mode='MarkdownV2'
+                )
+            else:
+                error_msg = f"⚠️ Ошибка рассылки: {email_result.get('error')}"
+                await context.bot.send_message(chat_id=chat_id, text=error_msg)
+        else:
+            await context.bot.send_message(chat_id=chat_id, text="ℹ️ Email-уведомления отключены.")
+
+    except Exception as e:
+        logger.critical("Ошибка при ручном запуске.", exc_info=True)
+        error_message = (
+            f"❌ *Критическая ошибка* ❌\n\n"
+            f"`{escape_markdown(str(e), version=2)}`\n\n"
+            f"*Traceback:*\n```\n{escape_markdown(traceback.format_exc(limit=1), version=2)}\n```"
+        )
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=error_message,
+            parse_mode='MarkdownV2'
+        )
 
 def main():
     logger.info("Запуск Telegram-бота...")
@@ -475,6 +631,7 @@ def main():
     )
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("run_month", force_run_monthly_task))
     application.add_handler(holiday_check_conv_handler)
     application.add_handler(report_conv_handler)
 
