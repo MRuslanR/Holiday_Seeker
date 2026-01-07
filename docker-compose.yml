@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  bot:
+    image: holiday-bot
+    build: .
+    container_name: holiday-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./holidays.db:/app/holidays.db
+      - ./config.xlsx:/app/config.xlsx
+      - ./reports:/app/reports
+      - ./bot_persistence.pickle:/app/bot_persistence.pickle
