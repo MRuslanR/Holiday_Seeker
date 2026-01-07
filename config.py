@@ -29,8 +29,8 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 DB_PATH = 'holidays.db'
 CONFIG_PATH = 'config.xlsx'
 REPORTS_DIR = 'reports'
-DEDUPLICATE_MODEL = 'perplexity/sonar-pro-search'
-FILTERING_MODEL = 'perplexity/sonar-pro-search'
+DEDUPLICATE_MODEL = 'perplexity/sonar-reasoning-pro'
+FILTERING_MODEL = 'perplexity/sonar-reasoning-pro'
 
 
 # Включить/выключить автоматический ежемесячный запуск
