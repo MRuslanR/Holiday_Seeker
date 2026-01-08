@@ -29,7 +29,7 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 DB_PATH = 'holidays.db'
 CONFIG_PATH = 'config.xlsx'
 REPORTS_DIR = 'reports'
-DEDUPLICATE_MODEL = 'gemini-3-flash-preview'
+DEDUPLICATE_MODEL = 'google/gemini-3-flash-preview'
 FILTERING_MODEL = 'perplexity/sonar-pro-search'
 
 
