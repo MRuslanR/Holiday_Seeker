@@ -39,11 +39,7 @@ The project root must contain an Excel file named `config.xlsx` with two sheets:
 
 ### 3. Docker Deployment
 
-Build the image:
-```docker build -t holidays-bot .```
-
-Run the container (mounting a volume for database persistence):
-```docker run -d --name holidays-bot holidays-bot```
+```docker-compose up -d --build```
 
 ### 4. Manual Execution
 Install dependencies:
