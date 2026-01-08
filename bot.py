@@ -554,7 +554,7 @@ def main():
         return
 
     # Данные будут сохраняться в файл 'bot_persistence.pickle'
-    persistence = PicklePersistence(filepath="bot_persistence.pickle")
+    persistence = PicklePersistence(filepath="data/bot_persistence.pickle")
 
     application = (
         ApplicationBuilder()
