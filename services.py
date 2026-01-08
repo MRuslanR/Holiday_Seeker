@@ -310,6 +310,21 @@ class HolidayService:
         except KeyError as e:
             self.logger.error(f"Отсутствует обязательное поле '{e}' в данных праздника для сохранения: {holiday_data}",
                               extra=log_ctx)
+            
+    @retry_on_exception(exceptions=(APIError, InvalidJSONPayloadError))
+    def _get_safe_llm_response(self, client: OpenRouterClient, system_prompt: str, user_content: str) -> Dict[str, Any]:
+        """
+        Выполняет запрос к LLM и сразу пытается распарсить JSON.
+        Если ответ не валидный JSON, выбрасывает исключение, чтобы сработал retry.
+        """
+        response = client.create_chat_completion(system_prompt, user_content)
+        parsed_data = self._parse_llm_json_response(response['result'])
+        
+        return {
+            'data': parsed_data,
+            'tokens': response['tokens'],
+            'price': response['price']
+        }
 
     def process_holidays_for_period(self, country_code: str, year: str, month: str, first_day: str, last_day: str):
         log_ctx = {'country': country_code, 'period': f"{year}-{month}"}
@@ -318,6 +333,7 @@ class HolidayService:
         country_tokens = 0
         country_price = 0.0
 
+        # Сбор сырых данных
         raw_holidays = {
             "ninjas_holidays": self._get_from_ninjas(country_code, year, month),
             "nager_holidays": self._get_from_nager(country_code, year, month),
@@ -330,53 +346,56 @@ class HolidayService:
                                 extra={'context': log_ctx})
             return
 
-        # 1. Этап дедупликации через OpenRouter
+        holidays_to_check = []
         try:
             self.logger.info("Отправка данных на дедупликацию в OpenRouter...", extra={'context': log_ctx})
             
-            # Формируем контент для пользователя
             dedup_user_content = json.dumps(raw_holidays, ensure_ascii=False)
-            
-            dedup_response = self.deduplicate_llm_client.create_chat_completion(
-                SYSTEM_PROMPT_DEDUPLICATE, 
+
+            dedup_response = self._get_safe_llm_response(
+                self.deduplicate_llm_client,
+                SYSTEM_PROMPT_DEDUPLICATE,
                 dedup_user_content
             )
 
-            current_tokens = dedup_response.get('tokens', 0)
-            current_price = dedup_response.get('price', 0.0)
+            # Обновляем статистику
+            current_tokens = dedup_response['tokens']
+            current_price = dedup_response['price']
             
-            self.logger.info(f"[Экономика] Запрос на дедупликацию: {current_tokens} токенов, {current_price:.4f}$")
-
             country_tokens += current_tokens
             country_price += current_price
             self.grand_total_tokens += current_tokens
             self.grand_total_price += current_price
 
-            clean_holidays_str = dedup_response.get('result', '{}')
-            clean_holidays_data = self._parse_llm_json_response(clean_holidays_str)
+            self.logger.info(f"[Экономика] Дедупликация: {current_tokens} токенов, {current_price:.4f}$")
+
+            # Получаем уже чистые данные (парсинг прошел успешно внутри _get_safe_llm_response)
+            clean_holidays_data = dedup_response['data']
             holidays_to_check = clean_holidays_data.get('holidays', [])
             
             self.logger.info(
                 f"Дедупликация завершена. Получено {len(holidays_to_check)} уникальных праздников для проверки.",
                 extra={'context': log_ctx})
 
-        except (APIError, InvalidJSONPayloadError, json.JSONDecodeError) as e:
+        except (APIError, InvalidJSONPayloadError) as e:
+            # Сюда мы попадем, только если ПОСЛЕ ВСЕХ ПОПЫТОК (retries) так и не удалось получить JSON
             self.logger.exception(
-                "Ошибка на этапе дедупликации праздников (OpenRouter). Обработка страны прервана.",
+                "Не удалось выполнить дедупликацию даже после нескольких попыток. Обработка страны прервана.",
                 extra={'context': log_ctx})
             return
 
-        # 2. Этап проверки фактов и сохранения
         if not holidays_to_check:
             self.logger.info("После дедупликации не осталось праздников для проверки.", extra={'context': log_ctx})
         else:
             self.logger.info("Начало проверки фактов и сохранения праздников...", extra={'context': log_ctx})
+            
             for holiday in holidays_to_check:
                 try:
                     date_str = holiday.get('date')
+                    # Проверка на выходные
                     if self._is_weekend(date_str):
                         self.logger.info(
-                            f"Праздник '{holiday.get('name')}' ({date_str}) выпадает на выходной. Пропускаем проверку и сохранение.",
+                            f"Праздник '{holiday.get('name')}' ({date_str}) выпадает на выходной. Пропускаем проверку.",
                             extra={'context': log_ctx}
                         )
                         continue
@@ -384,43 +403,45 @@ class HolidayService:
                     holiday['region_context'] = country_code
                     checker_user_content = json.dumps(holiday, ensure_ascii=False)
                     
-                    checker_response = self.filter_llm_client.create_chat_completion(
-                        SYSTEM_PROMPT_CHECKER, 
+                    checker_response = self._get_safe_llm_response(
+                        self.filter_llm_client,
+                        SYSTEM_PROMPT_CHECKER,
                         checker_user_content
                     )
 
-                    current_tokens = checker_response.get('tokens', 0)
-                    current_price = checker_response.get('price', 0.0)
+                    current_tokens = checker_response['tokens']
+                    current_price = checker_response['price']
                     
-                    self.logger.info(
-                        f"[Экономика] Запрос на проверку факта '{holiday.get('name')}': {current_tokens} токенов, {current_price:.4f}$.")
-
                     country_tokens += current_tokens
                     country_price += current_price
                     self.grand_total_tokens += current_tokens
                     self.grand_total_price += current_price
+                    
+                    self.logger.info(
+                        f"[Экономика] Проверка '{holiday.get('name')}': {current_tokens} токенов, {current_price:.4f}$.")
 
-                    response_text = checker_response.get('result', '')
-                    verified_data = self._parse_llm_json_response(response_text)
+                    verified_data = checker_response['data']
 
+                    # Логика сохранения результата
                     is_holiday_flag = verified_data.get('is_holiday')
                     if str(is_holiday_flag).lower() == 'true' or is_holiday_flag is True:
-                        self.logger.info(f"Праздник '{holiday.get('name')} - {holiday.get('date')}' подтвержден как выходной.")
+                        self.logger.info(f"Праздник '{holiday.get('name')} - {holiday.get('date')}' подтвержден.")
                         self._save_verified_holiday(country_code, verified_data)
                     else:
                         self.logger.info(
                             f"Праздник '{holiday.get('name')} - {holiday.get('date')}' НЕ является выходным.")
 
                 except (APIError, InvalidJSONPayloadError) as e:
-                    self.logger.exception(
-                        f"Ошибка API при проверке праздника '{holiday.get('name')}' после всех попыток. Пропускаем.",
+                    self.logger.error(
+                        f"Не удалось проверить праздник '{holiday.get('name')}' после всех попыток (ошибка JSON/API). Пропускаем.",
                         extra={'context': log_ctx})
+                    continue
                 except Exception as e:
-                    self.logger.exception(f"Непредвиденная ошибка при обработке праздника: {holiday}. Пропускаем.",
-                                          extra={'context': log_ctx})
+                    self.logger.exception(f"Непредвиденная ошибка при обработке праздника: {holiday}. Пропускаем.", extra={'context': log_ctx})
+                    continue
 
+        # Итоговая статистика по стране
         self.logger.info(f"Итоги по экономике для страны {country_code.upper()}:")
         self.logger.info(f"  - Потрачено токенов: {country_tokens}")
         self.logger.info(f"  - Общая стоимость: {country_price:.4f}$")
-        self.logger.info(f"Обработка праздников для страны {country_code.upper()} завершена.",
-                         extra={'context': log_ctx})
+        self.logger.info(f"Обработка праздников для страны {country_code.upper()} завершена.", extra={'context': log_ctx})
