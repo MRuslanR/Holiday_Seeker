@@ -12,4 +12,4 @@ services:
       - ./holidays.db:/app/holidays.db
       - ./config.xlsx:/app/config.xlsx
       - ./reports:/app/reports
-      - ./bot_persistence.pickle:/app/bot_persistence.pickle
+      - ./bot_data:/app/data
